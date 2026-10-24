@@ -6,7 +6,8 @@
     python recommender.py --text "복수를 다룬 스릴러"
     python recommender.py --data data/sample_movies.csv --similar 기생충   # 샘플 35편 버전
 
-문서 = 줄거리 명사·동사 + 장르 토큰 x2 + 키워드 토큰 x2 + 감독 토큰 x1
+문서 = 줄거리 일반명사·동사·형용사 + 장르 토큰 x2 + 키워드 토큰 x2 + 감독 토큰 x1
+내부 동작은 docs/HOW_IT_WORKS.md
 """
 import argparse
 import re
