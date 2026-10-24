@@ -192,6 +192,44 @@ def refine(rows: list[dict], max_movies: int = MAX_MOVIES) -> tuple[pd.DataFrame
     return df.sort_values(["year", "title"]).reset_index(drop=True), steps
 
 
+def csv_to_rows(df: pd.DataFrame) -> list[dict]:
+    """공공데이터포털 '한국영상자료원_영화상세정보'(2022-11, 통합 파일) → API 수집과 같은 행 형식.
+
+    키 없이 받을 수 있는 대체 데이터. 대부분 국내 독립·단편 영화다.
+    크레딧은 '감독,출연,…'과 '이정민,이민휘,…'가 같은 순서로 짝을 이룬다.
+    """
+    def pick_directors(credits, names) -> str:
+        pairs = zip(str(credits).split(","), str(names).split(","))
+        return "|".join(dict.fromkeys(n.strip() for c, n in pairs if c.strip() == "감독" and n.strip()))
+
+    rows = []
+    for _, r in df.iterrows():
+        mid = clean_text(r.get("KMDB영화정보관리번호"))
+        url = f"https://www.kmdb.or.kr/db/kor/detail/movie/{mid[0]}/{mid[1:]}" if len(mid) > 1 else ""
+        split = lambda v: "|".join(x.strip() for x in re.split(r"[,|]", clean_text(v)) if x.strip())
+        rows.append({
+            "id": mid,
+            "title": clean_text(r.get("제명")),
+            "year": to_int(r.get("제작년도")),
+            "genres": split(r.get("장르")) or "기타",
+            "overview": clean_text(r.get("줄거리")),
+            "keywords": split(r.get("키워드")),
+            "director": pick_directors(r.get("크레딧명", ""), r.get("인명", "")),
+            "nation": clean_text(r.get("제작국가")),
+            "audience": None,
+            "url": url,
+            "type": clean_text(r.get("길이구분")),
+        })
+    return rows
+
+
+def load_csv(folder: Path) -> list[dict]:
+    files = sorted(folder.glob("*통합*.csv")) or sorted(folder.glob("*.csv"))
+    if not files:
+        sys.exit(f"{folder}에 영화상세정보 CSV가 없습니다")
+    return csv_to_rows(pd.read_csv(files[0], encoding="utf-8-sig"))
+
+
 def load_raw() -> list[dict]:
     rows = []
     for p in sorted(RAW_DIR.glob("*_*_*_*.json")):
@@ -207,19 +245,25 @@ def main():
     ap.add_argument("--from", dest="start", default="20150101")
     ap.add_argument("--to", dest="end", default="20251231")
     ap.add_argument("--from-raw", action="store_true", help="저장된 원본으로 다시 정제")
+    ap.add_argument("--from-csv", type=Path, metavar="폴더",
+                    help="API 대신 공공데이터포털 영화상세정보 CSV 폴더로 만든다 (data/movies_kmdb_csv.csv)")
     ap.add_argument("--max", type=int, default=MAX_MOVIES)
     a = ap.parse_args()
 
     if a.sample:
         fetch_sample()
         return
-    if not a.from_raw:
-        fetch_all(a.start, a.end)
-    df, steps = refine(load_raw(), a.max)
+    if a.from_csv:
+        rows, out = load_csv(a.from_csv), OUT.with_name("movies_kmdb_csv.csv")
+    else:
+        if not a.from_raw:
+            fetch_all(a.start, a.end)
+        rows, out = load_raw(), OUT
+    df, steps = refine(rows, a.max)
     print(" → ".join(f"{name} {n:,}건" for name, n in steps))
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(OUT, index=False, encoding="utf-8-sig")
-    print(f"저장: {OUT}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out, index=False, encoding="utf-8-sig")
+    print(f"저장: {out}")
 
 
 if __name__ == "__main__":

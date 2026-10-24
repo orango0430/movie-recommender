@@ -19,6 +19,11 @@ def test_tokenize_drops_stopwords_and_particles():
     assert "이야기" not in toks and "들" not in toks
 
 
+def test_character_names_are_dropped():
+    # 등장인물 이름(고유명사)이 같다는 이유로 엉뚱한 영화가 이어지지 않게
+    assert "소영" not in tokenize("소영은 아기를 베이비박스에 두고 간다")
+
+
 def test_document_weights():
     doc = build_document(pd.Series({"overview": "", "genres": "범죄|액션", "keywords": "복수", "director": "봉준호"}))
     assert doc.count("장르:범죄") == 2 and doc.count("키워드:복수") == 2 and doc.count("감독:봉준호") == 1
