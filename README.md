@@ -17,6 +17,15 @@ python recommender.py --text "복수를 다룬 스릴러"
 
 샘플 35편 버전: `python recommender.py --data data/sample_movies.csv --similar 기생충`
 
+### 검색 화면 (로컬)
+
+```powershell
+python web.py        # http://localhost:8501
+```
+
+추가 설치 없이 파이썬 내장 웹서버로 띄운다. 문장 검색과 비슷한 영화(제목 자동완성)를 고를 수 있고,
+결과 카드의 "이 영화와 비슷한 영화"로 이어서 탐색한다. `data/` 폴더에 있는 데이터(API 수집본, 독립영화 CSV, 샘플 35편) 중에서 고른다.
+
 ## 추천 방식
 
 문서 = 줄거리 일반명사·동사·형용사(kiwipiepy, 고유명사 제외) + `장르:` 토큰 x2 + `키워드:` 토큰 x2 + `감독:` 토큰 x1.
