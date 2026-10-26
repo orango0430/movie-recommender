@@ -3,3 +3,5 @@
 data/raw/
 __pycache__/
 .pytest_cache/
+# KMDb API 수집본: 이용약관 재배포 조건 확인 전이라 올리지 않는다
+data/movies.csv

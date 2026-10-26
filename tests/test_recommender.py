@@ -24,6 +24,22 @@ def test_character_names_are_dropped():
     assert "소영" not in tokenize("소영은 아기를 베이비박스에 두고 간다")
 
 
+def test_name_patterns_removed_before_analysis():
+    toks = tokenize("사이는 좋은 기택(송강호) 가족. 장남 기우(최우식)와 ‘상현’이 과외 자리를 얻는다")
+    assert not {"기택", "기우", "상", "현", "송강호"} & set(toks)
+    assert {"가족", "장남", "과외"} <= set(toks)
+    # 이름 뒤 조사가 떨어져 단어로 남지 않는다
+    assert not {"을", "과", "이"} & set(tokenize("엄마가 아기 ‘우성’을 찾는다. 형사 ‘수진’과 함께"))
+    # 띄어쓰기가 있는 따옴표(대사)는 이름이 아니라서 지우지 않는다
+    assert "가족" in tokenize("“우리 가족은 행복해야 해” 그는 결심한다")
+
+
+def test_meta_keywords_are_not_used():
+    doc = build_document(pd.Series({"overview": "", "genres": "",
+                                    "keywords": "빈부격차|황금종려상|소설원작|해외영화제수상작|반지하"}))
+    assert set(doc) == {"키워드:빈부격차", "키워드:반지하"}
+
+
 def test_document_weights():
     doc = build_document(pd.Series({"overview": "", "genres": "범죄|액션", "keywords": "복수", "director": "봉준호"}))
     assert doc.count("장르:범죄") == 2 and doc.count("키워드:복수") == 2 and doc.count("감독:봉준호") == 1

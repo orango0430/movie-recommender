@@ -35,7 +35,26 @@ STOPWORDS = {
     "하다", "되다", "있다", "없다", "보다", "같다", "가다", "오다", "알다", "만나다", "위하다",
     # 독립영화 3,991편 점검에서 추천 이유로 자주 나왔지만 내용과 무관했던 말
     "특별", "과정", "반", "지나다", "보이다", "돌아오다", "살다", "늦다", "다녀오다", "후배",
+    # 문장 검색에서 "~를 다룬", "~를 그린"처럼 내용이 아니라 말투로 들어오는 동사
+    "다루다", "그리다",
 }
+# 영화 내용이 아니라 출처·이력을 말하는 KMDb 키워드. 가중치 2배라 남겨 두면 주제를 덮는다
+# (기생충의 키워드 20개 중 해외영화제수상작, 황금종려상, 아카데미상이 가족·빈부격차보다 강하게 작용했다)
+META_KEYWORDS = {
+    "실화바탕", "시리즈", "극장판", "리메이크", "옴니버스영화", "사사로운영화리스트", "넷플릭스",
+    "황금종려상", "아카데미상", "모션캡처", "1인2역", "1인다역", "3D", "IMAX",
+}
+_META_SUFFIX = ("원작", "수상작", "영화제")
+
+
+def is_meta_keyword(k: str) -> bool:
+    return k in META_KEYWORDS or k.endswith(_META_SUFFIX)
+
+
+# KMDb 줄거리는 등장인물을 '기택(송강호)', '상현'처럼 쓴다. 이름은 형태소 분석기가 일반명사로 보기도 해서
+# (기우, 동수) 품사만으로는 다 걸러지지 않는다. 괄호 앞 단어와 짧은 따옴표 안 단어를 먼저 지운다
+_NAME_WITH_ACTOR = re.compile(r"[^\s(（]+\s?[(（][^)）]{1,20}[)）]")
+_QUOTED_NAME = re.compile(r"[‘'\"“]([^’'\"”\s]{1,6})[’'\"”]")
 # 일반명사, 동사, 형용사, 외국어. 고유명사(NNP)는 뺀다: 대부분 등장인물 이름(소영, 경수)이라
 # 이름이 같은 엉뚱한 영화끼리 이어졌다. 지명·주제어는 키워드 토큰으로 따로 들어간다
 CONTENT_TAGS = {"NNG", "VV", "VA", "SL"}
@@ -53,6 +72,8 @@ def kiwi() -> Kiwi:
 def tokenize(text: str) -> list[str]:
     if not isinstance(text, str) or not text.strip():
         return []
+    # 그냥 지우면 뒤의 조사('우성'을 → 을)가 떨어져 단어로 잡힌다. 불용어 "사람"으로 바꿔 조사와 함께 버린다
+    text = _QUOTED_NAME.sub("사람", _NAME_WITH_ACTOR.sub("사람", text))
     out = []
     for t in kiwi().tokenize(text):
         if t.tag not in CONTENT_TAGS:
@@ -76,7 +97,8 @@ def build_document(row: pd.Series) -> list[str]:
     for g in _split(row.get("genres")):
         tokens += [f"장르:{g}"] * GENRE_WEIGHT
     for k in _split(row.get("keywords")):
-        tokens += [f"키워드:{k}"] * KEYWORD_WEIGHT
+        if not is_meta_keyword(k):
+            tokens += [f"키워드:{k}"] * KEYWORD_WEIGHT
     for d in _split(row.get("director")):
         tokens += [f"감독:{d}"] * DIRECTOR_WEIGHT
     return tokens
