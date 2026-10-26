@@ -69,11 +69,18 @@ def kiwi() -> Kiwi:
     return _kiwi
 
 
+def clean_plot(text: str) -> str:
+    """인물 이름을 '사람'으로 바꾼다. 그냥 지우면 뒤의 조사('우성'을 → 을)가 떨어져 단어로 잡힌다.
+    TF-IDF와 임베딩(embedder.py)이 같은 규칙을 쓴다."""
+    if not isinstance(text, str):
+        return ""
+    return _QUOTED_NAME.sub("사람", _NAME_WITH_ACTOR.sub("사람", text))
+
+
 def tokenize(text: str) -> list[str]:
     if not isinstance(text, str) or not text.strip():
         return []
-    # 그냥 지우면 뒤의 조사('우성'을 → 을)가 떨어져 단어로 잡힌다. 불용어 "사람"으로 바꿔 조사와 함께 버린다
-    text = _QUOTED_NAME.sub("사람", _NAME_WITH_ACTOR.sub("사람", text))
+    text = clean_plot(text)
     out = []
     for t in kiwi().tokenize(text):
         if t.tag not in CONTENT_TAGS:
@@ -111,9 +118,21 @@ class Result:
     reasons: list[str]
 
 
+METHODS = ("tfidf", "embed", "hybrid")
+# 혼합 방식에서 임베딩 점수의 비중. 나머지는 TF-IDF(장르·키워드·감독 포함)
+HYBRID_ALPHA = 0.7
+
+
 class Recommender:
-    def __init__(self, movies: pd.DataFrame, max_df: float | None = None, min_df: int | None = None):
+    """method: tfidf(단어 겹침) | embed(줄거리 뜻, embedder.py) | hybrid(둘을 섞음).
+    embeddings는 embedder.load_or_build()로 만든 '영화 수 × 768' 행렬. 없으면 tfidf만 쓸 수 있다."""
+
+    def __init__(self, movies: pd.DataFrame, max_df: float | None = None, min_df: int | None = None,
+                 embeddings: np.ndarray | None = None):
         self.movies = movies.reset_index(drop=True)
+        if embeddings is not None and len(embeddings) != len(self.movies):
+            raise ValueError("임베딩 행 수가 영화 수와 다릅니다. embedder.py로 다시 만드세요")
+        self.embeddings = embeddings
         n = len(self.movies)
         # 데이터가 적으면(샘플 35편) 흔한/희귀 단어 거르기를 끈다. 다 걸러져 버리기 때문
         self.max_df = max_df if max_df is not None else (0.5 if n >= 200 else 1.0)
@@ -149,10 +168,27 @@ class Recommender:
 
     # ---- 추천 ----
 
-    def _rank(self, vec, exclude: set[int], top: int) -> list[Result]:
-        scores = cosine_similarity(vec, self.matrix).ravel()
+    def _check(self, method: str):
+        if method not in METHODS:
+            raise ValueError(f"method는 {', '.join(METHODS)} 중 하나")
+        if method != "tfidf" and self.embeddings is None:
+            raise ValueError("임베딩이 없습니다. 먼저 python embedder.py --data <데이터> 를 실행하세요")
+
+    def _rank(self, vec, emb_vec, exclude: set[int], top: int, method: str = "tfidf") -> list[Result]:
+        """vec: TF-IDF 벡터, emb_vec: 길이 1인 임베딩 벡터. 추천 이유는 방식과 상관없이 겹치는 단어로 보여 준다."""
+        tfidf = cosine_similarity(vec, self.matrix).ravel()
+        if method == "tfidf":
+            scores = tfidf
+        else:
+            emb = self.embeddings @ emb_vec
+            scores = emb if method == "embed" else HYBRID_ALPHA * emb + (1 - HYBRID_ALPHA) * tfidf
         order = [i for i in np.argsort(-scores) if i not in exclude and scores[i] > 0][:top]
         return [Result(int(i), float(scores[i]), self._reasons(vec, i)) for i in order]
+
+    @staticmethod
+    def _unit(v: np.ndarray) -> np.ndarray:
+        n = np.linalg.norm(v)
+        return v / n if n else v
 
     def _reasons(self, vec, i: int, k: int = 4) -> list[str]:
         """두 벡터에서 곱이 큰 단어 = 유사도에 가장 많이 기여한 단어"""
@@ -160,22 +196,34 @@ class Recommender:
         idx = [j for j in np.argsort(-contrib)[:k] if contrib[j] > 0]
         return [self.vocab[j] for j in idx]
 
-    def similar(self, query: str, top: int = 5) -> tuple[int, list[Result]]:
-        i = self.find(query)
-        return i, self._rank(self.matrix[i], {i}, top)
+    def similar(self, query: str, top: int = 5, method: str = "tfidf") -> tuple[int, list[Result]]:
+        return self.similar_index(self.find(query), top, method)
 
-    def from_watched(self, titles: list[str], top: int = 5) -> tuple[list[int], list[Result]]:
+    def similar_index(self, i: int, top: int = 5, method: str = "tfidf") -> tuple[int, list[Result]]:
+        """제목 대신 행 번호로. 평가(evaluate.py)에서 수천 편을 돌릴 때 쓴다."""
+        self._check(method)
+        emb = None if method == "tfidf" else self.embeddings[i]
+        return i, self._rank(self.matrix[i], emb, {i}, top, method)
+
+    def from_watched(self, titles: list[str], top: int = 5, method: str = "tfidf") -> tuple[list[int], list[Result]]:
+        self._check(method)
         idx = [self.find(t) for t in titles]
         profile = csr_matrix(self.matrix[idx].mean(axis=0))
-        return idx, self._rank(profile, set(idx), top)
+        emb = None if method == "tfidf" else self._unit(self.embeddings[idx].mean(axis=0))
+        return idx, self._rank(profile, emb, set(idx), top, method)
 
-    def search(self, text: str, top: int = 5) -> list[Result]:
+    def search(self, text: str, top: int = 5, method: str = "tfidf") -> list[Result]:
+        self._check(method)
         tokens = tokenize(text)
         # "스릴러", "애니메이션"처럼 장르 이름이 문장에 있으면 장르 토큰으로도 넣는다
         genres = {g for gs in self.movies["genres"].dropna() for g in _split(gs)}
         tokens += [f"장르:{g}" for g in genres if g in text]
         vec = self.vectorizer.transform([tokens])
-        return self._rank(vec, set(), top)
+        emb = None
+        if method != "tfidf":
+            from embedder import embed_query  # 모델(torch)은 임베딩을 쓸 때만 불러온다
+            emb = embed_query(text)
+        return self._rank(vec, emb, set(), top, method)
 
 
 def load(path: Path) -> pd.DataFrame:
@@ -195,26 +243,35 @@ def print_results(rec: Recommender, results: list[Result]):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="TF-IDF 영화 추천기")
+    ap = argparse.ArgumentParser(description="영화 추천기 (TF-IDF / 문장 임베딩)")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--similar", metavar="제목", help='비슷한 영화. 동명 영화는 "제목 (연도)"')
     g.add_argument("--watched", metavar="제목들", help="본 영화들(쉼표 구분)을 바탕으로 추천")
     g.add_argument("--text", metavar="문장", help="문장으로 검색")
     ap.add_argument("--data", type=Path, default=DEFAULT_DATA)
     ap.add_argument("--top", type=int, default=5)
+    ap.add_argument("--method", choices=METHODS, default="tfidf",
+                    help="tfidf: 단어 겹침, embed: 줄거리 뜻(임베딩), hybrid: 둘을 섞음")
     a = ap.parse_args(argv)
 
-    rec = Recommender(load(a.data))
-    print(f"영화 {len(rec.movies):,}편 · 단어 {len(rec.vocab):,}개 (max_df={rec.max_df}, min_df={rec.min_df})\n")
+    movies = load(a.data)
+    emb = None
+    if a.method != "tfidf":
+        from embedder import load_or_build
+        emb = load_or_build(movies.reset_index(drop=True), a.data)
+        if emb is None:
+            sys.exit(f"임베딩이 없습니다. 먼저 python embedder.py --data {a.data} 를 실행하세요 (한 번만)")
+    rec = Recommender(movies, embeddings=emb)
+    print(f"영화 {len(rec.movies):,}편 · 단어 {len(rec.vocab):,}개 (max_df={rec.max_df}, min_df={rec.min_df}) · 방식 {a.method}\n")
     try:
         if a.similar:
-            i, res = rec.similar(a.similar, a.top)
+            i, res = rec.similar(a.similar, a.top, a.method)
             print(f"'{rec.label(i)}'와 비슷한 영화")
         elif a.watched:
-            idx, res = rec.from_watched([t for t in a.watched.split(",") if t.strip()], a.top)
+            idx, res = rec.from_watched([t for t in a.watched.split(",") if t.strip()], a.top, a.method)
             print("본 영화: " + ", ".join(rec.label(i) for i in idx))
         else:
-            res = rec.search(a.text, a.top)
+            res = rec.search(a.text, a.top, a.method)
             print(f"'{a.text}' 검색 결과")
     except KeyError as e:
         sys.exit(str(e.args[0]))

@@ -1,6 +1,7 @@
 # KMDb 영화 추천 (로컬 예제)
 
-한국영상자료원 KMDb API로 영화 줄거리를 모아 TF-IDF + 코사인 유사도로 추천한다. 서버·DB 없이 터미널에서 실행한다.
+한국영상자료원 KMDb API로 영화 줄거리를 모아 비슷한 영화를 추천한다. 서버·DB 없이 로컬에서 실행한다.
+방식은 세 가지: **단어 겹침(TF-IDF)**, **줄거리 뜻(문장 임베딩)**, 둘을 섞은 **혼합**(기본, [비교 결과](docs/EMBEDDING.md)).
 
 ## 실행
 
@@ -17,6 +18,18 @@ python recommender.py --text "복수를 다룬 스릴러"
 
 샘플 35편 버전: `python recommender.py --data data/sample_movies.csv --similar 기생충`
 
+### 임베딩·혼합 방식 (선택)
+
+```powershell
+pip install torch --index-url https://download.pytorch.org/whl/cpu   # CPU 버전 PyTorch
+pip install sentence-transformers
+python embedder.py --data data/movies.csv     # 처음 한 번: 줄거리 벡터 계산 (7,456편 약 13분) -> data/emb/
+python recommender.py --similar 기생충 --method hybrid     # tfidf | embed | hybrid
+python evaluate.py                            # 세 방식 비교 -> docs/evaluation_result.md
+```
+
+모델(`jhgan/ko-sroberta-multitask`)은 처음 실행 때 자동으로 내려받는다. 학습은 하지 않는다.
+
 `data/movies.csv`(KMDb API 수집본)는 저장소에 넣지 않는다. KMDb 이용약관의 재배포 조건을 확인하기 전이라,
 키를 받아 위 명령으로 직접 만든다. 키 없이 보려면 공공데이터포털 CSV로 만든 `data/movies_kmdb_csv.csv`를 쓴다.
 
@@ -26,19 +39,26 @@ python recommender.py --text "복수를 다룬 스릴러"
 python web.py        # http://localhost:8501
 ```
 
-추가 설치 없이 파이썬 내장 웹서버로 띄운다. 문장 검색과 비슷한 영화(제목 자동완성)를 고를 수 있고,
+파이썬 내장 웹서버로 띄운다. 문장 검색과 비슷한 영화(제목 자동완성)를 고를 수 있고,
 결과 카드의 "이 영화와 비슷한 영화"로 이어서 탐색한다. `data/` 폴더에 있는 데이터(API 수집본, 독립영화 CSV, 샘플 35편) 중에서 고른다.
+임베딩을 만들어 둔 데이터는 방식(단어 겹침·줄거리 뜻·혼합)을 고르거나 **세 방식을 나란히** 볼 수 있다.
 
 ## 문서
 
-- [내부 동작](docs/HOW_IT_WORKS.md): 데이터 수집·정제, TF-IDF 벡터, 유사도와 추천 이유 계산, 검색 화면 구조
+- [내부 동작](docs/HOW_IT_WORKS.md): 데이터 수집·정제, TF-IDF 벡터, 임베딩, 유사도와 추천 이유 계산, 검색 화면 구조
+- [임베딩 비교](docs/EMBEDDING.md): TF-IDF vs 임베딩 vs 혼합, 대리 지표·점검표·문장 검색 결과와 결론
 - [개발 과정](docs/DEVELOPMENT_LOG.md): API 키 문제와 원인 추적, 대체 데이터, 점검 조정 기록, 키워드 가중치 실험
 
 ## 추천 방식
 
-문서 = 줄거리 일반명사·동사·형용사(kiwipiepy, 고유명사·인물 이름 제외) + `장르:` 토큰 x2 + `키워드:` 토큰 x2(출처·수상 같은 메타 키워드 제외) + `감독:` 토큰 x1.
+**TF-IDF:** 문서 = 줄거리 일반명사·동사·형용사(kiwipiepy, 고유명사·인물 이름 제외) + `장르:` 토큰 x2 + `키워드:` 토큰 x2(출처·수상 같은 메타 키워드 제외) + `감독:` 토큰 x1.
 영화가 200편 이상이면 `max_df=0.5`(절반 넘게 나오는 단어 제외), `min_df=2`(한 영화에만 나오는 단어 제외).
-추천 이유 = 두 영화 TF-IDF 벡터에서 곱이 큰 단어.
+
+**임베딩:** 줄거리를 120토큰 이하 조각으로 나눠 `jhgan/ko-sroberta-multitask`로 768차원 벡터를 만들고 길이 가중 평균.
+
+**혼합(기본):** 0.7 × 임베딩 유사도 + 0.3 × TF-IDF 유사도. 대리 지표(시리즈 찾기 52.3%, 애니메이션 일치 62.3%)에서 가장 좋았다.
+
+추천 이유는 방식과 상관없이 두 영화 TF-IDF 벡터에서 곱이 큰 단어로 보여 준다. 임베딩으로만 찾은 영화는 이유가 비어 있을 수 있다.
 
 ## 정제 규칙
 

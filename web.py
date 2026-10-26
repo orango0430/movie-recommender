@@ -12,7 +12,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 
-from recommender import Recommender
+import embedder
+from recommender import METHODS, Recommender
 
 ROOT = Path(__file__).parent
 DATASETS = {
@@ -25,14 +26,26 @@ _cache: dict[str, Recommender] = {}
 _lock = threading.Lock()
 
 
+def read(dataset: str) -> pd.DataFrame:
+    return pd.read_csv(DATASETS[dataset][1], encoding="utf-8-sig").reset_index(drop=True)
+
+
+def has_embeddings(dataset: str) -> bool:
+    """임베딩은 python embedder.py 로 미리 만들어 둔 것만 쓴다. 화면에서 수십 분짜리 계산을 시작하지 않는다."""
+    return embedder.cache_path(read(dataset), DATASETS[dataset][1]).exists()
+
+
 def available() -> list[dict]:
-    return [{"id": k, "name": name} for k, (name, path) in DATASETS.items() if path.exists()]
+    return [{"id": k, "name": name, "embed": has_embeddings(k)}
+            for k, (name, path) in DATASETS.items() if path.exists()]
 
 
 def recommender(dataset: str) -> Recommender:
     with _lock:  # 처음 한 번 형태소 분석에 몇 초 걸린다
         if dataset not in _cache:
-            _cache[dataset] = Recommender(pd.read_csv(DATASETS[dataset][1], encoding="utf-8-sig"))
+            movies = read(dataset)
+            emb = embedder.load_or_build(movies, DATASETS[dataset][1])
+            _cache[dataset] = Recommender(movies, embeddings=emb)
         return _cache[dataset]
 
 
@@ -60,22 +73,27 @@ def movie_json(rec: Recommender, i: int, score=None, reasons=None) -> dict:
 def search(params: dict) -> dict:
     dataset = params.get("data", "csv")
     mode = params.get("mode", "text")
+    method = params.get("method", "tfidf")
     q = params.get("q", "").strip()
     top = min(int(params.get("top", 10)), 30)
     if dataset not in DATASETS or not DATASETS[dataset][1].exists():
         return {"error": "데이터 파일이 없습니다"}
+    if method not in METHODS:
+        return {"error": "알 수 없는 방식입니다"}
     if not q:
         return {"error": "검색어를 입력하세요"}
     rec = recommender(dataset)
     try:
         if mode == "similar":
-            i, res = rec.similar(q, top)
+            i, res = rec.similar(q, top, method)
             base = movie_json(rec, i)
         else:
-            res, base = rec.search(q, top), None
+            res, base = rec.search(q, top, method), None
     except KeyError as e:
         return {"error": e.args[0]}
-    return {"base": base, "results": [movie_json(rec, r.index, r.score, r.reasons) for r in res],
+    except ValueError as e:
+        return {"error": str(e)}
+    return {"base": base, "method": method, "results": [movie_json(rec, r.index, r.score, r.reasons) for r in res],
             "count": len(rec.movies)}
 
 
@@ -122,11 +140,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8501)
     a = ap.parse_args()
-    # 기본 데이터는 미리 읽어 두어 첫 검색이 느리지 않게 한다
-    first = available()[0]["id"] if available() else None
-    if first:
-        print(f"{DATASETS[first][0]} 불러오는 중…")
-        recommender(first)
+    # 기본 데이터와 임베딩 모델은 미리 읽어 두어 첫 검색이 느리지 않게 한다
+    ds = available()
+    if ds:
+        print(f"{DATASETS[ds[0]['id']][0]} 불러오는 중…")
+        recommender(ds[0]["id"])
+    if any(d["embed"] for d in ds):
+        print("임베딩 모델 불러오는 중… (문장 검색용)")
+        embedder.model()
     server = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
     print(f"http://localhost:{a.port}  (종료: Ctrl+C)")
     try:

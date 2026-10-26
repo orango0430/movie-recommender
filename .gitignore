@@ -5,3 +5,5 @@ __pycache__/
 .pytest_cache/
 # KMDb API 수집본: 이용약관 재배포 조건 확인 전이라 올리지 않는다
 data/movies.csv
+# 임베딩 벡터: 데이터에서 다시 만들 수 있고 KMDb 수집본에서 나온 것도 있어 올리지 않는다
+data/emb/

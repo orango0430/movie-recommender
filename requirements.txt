@@ -4,3 +4,5 @@ kiwipiepy==0.24.1
 requests==2.34.2
 python-dotenv==1.2.4
 pytest==9.1.1
+# 임베딩(선택): torch는 CPU 버전 먼저 설치 - pip install torch --index-url https://download.pytorch.org/whl/cpu
+sentence-transformers==6.2.0

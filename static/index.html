@@ -51,13 +51,24 @@
   .score i b { display: block; height: 100%; background: var(--accent); }
   .more { border: 0; background: none; color: var(--accent); font: inherit; font-size: 13px; cursor: pointer; padding: 0; }
   footer { color: var(--muted); font-size: 12px; margin-top: 32px; }
+  /* 세 방식 나란히 */
+  body.wide main { max-width: 1280px; }
+  .cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .cols h3 { font-size: 14px; margin: 0 0 8px; }
+  .cols h3 small { display: block; color: var(--muted); font-weight: 400; font-size: 12px; }
+  .cols .card { padding: 10px 12px; }
+  .cols .overview { display: none; }
+  .cols .head { flex-direction: column; gap: 2px; }
+  .cols .title { font-size: 14px; }
+  .note { color: var(--muted); font-size: 12px; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
   @media (max-width: 560px) { .head { flex-direction: column; gap: 4px; } }
 </style>
 </head>
 <body>
 <main>
   <h1>영화 추천 검색</h1>
-  <div class="sub">TF-IDF 줄거리 유사도 · 로컬에서만 동작</div>
+  <div class="sub">줄거리 유사도 추천 · 로컬에서만 동작</div>
 
   <div class="bar">
     <div class="seg" id="mode">
@@ -65,6 +76,12 @@
       <button data-m="similar">비슷한 영화</button>
     </div>
     <select id="data" aria-label="데이터"></select>
+    <select id="method" aria-label="추천 방식">
+      <option value="tfidf">단어 겹침 (TF-IDF)</option>
+      <option value="embed">줄거리 뜻 (임베딩)</option>
+      <option value="hybrid">혼합 (뜻 70% + 단어 30%)</option>
+      <option value="compare">세 방식 나란히</option>
+    </select>
   </div>
   <form class="search" id="form">
     <input id="q" list="titles" autocomplete="off" placeholder="예: 복수를 다룬 스릴러" aria-label="검색어">
@@ -82,13 +99,23 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 let mode = 'text';
+let datasets = [];
+const METHOD_NAMES = { tfidf: ['단어 겹침', 'TF-IDF'], embed: ['줄거리 뜻', '임베딩'], hybrid: ['혼합', '뜻 70% + 단어 30%'] };
 
 const EXAMPLES = {
-  text: ['복수를 다룬 스릴러', '엄마와 딸의 화해', '청년 취업과 가난', '우주 SF', '아이를 키우는 가족'],
+  text: ['복수를 다룬 스릴러', '깡패를 소탕하는 경찰', '죽은 사람이 유령이 되어 돌아온다', '시간을 되돌리는 사랑 이야기', '아이를 키우는 가족'],
   similar: { csv: ['보이스 (2021)', '브로커 (2022)', '이 안에 외계인이 있다', '22 (2015)'],
              sample: ['기생충', '범죄도시', '겨울왕국', '인터스텔라'],
-             api: ['기생충', '범죄도시', '겨울왕국', '인터스텔라'] },
+             api: ['기생충', '범죄도시 (2017)', '극한직업', '마션', '겨울왕국 2'] },
 };
+
+function syncMethods() {
+  // 임베딩을 미리 만들어 둔 데이터에서만 임베딩·혼합·나란히 비교를 고를 수 있다
+  const d = datasets.find((x) => x.id === $('data').value);
+  const ok = d && d.embed;
+  [...$('method').options].forEach((o) => { if (o.value !== 'tfidf') o.disabled = !ok; });
+  if (!ok) $('method').value = 'tfidf';
+}
 
 function renderExamples() {
   const list = mode === 'text' ? EXAMPLES.text : (EXAMPLES.similar[$('data').value] || []);
@@ -112,21 +139,43 @@ function card(m, n) {
   </div>`;
 }
 
+function search(method, top) {
+  const params = new URLSearchParams({ q: $('q').value.trim(), mode, method, data: $('data').value, top });
+  return fetch('/api/search?' + params).then((x) => x.json());
+}
+
+function wireMore() {
+  $('results').querySelectorAll('.more').forEach((b) => b.onclick = () => {
+    setMode('similar'); $('q').value = b.dataset.label; run(); window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+}
+
 async function run() {
-  const q = $('q').value.trim();
-  if (!q) return;
+  if (!$('q').value.trim()) return;
+  const method = $('method').value;
+  const compare = method === 'compare';
+  document.body.classList.toggle('wide', compare);
   $('status').textContent = '검색 중…';
   $('results').innerHTML = ''; $('base').innerHTML = '';
-  const params = new URLSearchParams({ q, mode, data: $('data').value, top: 10 });
   try {
-    const r = await fetch('/api/search?' + params).then((x) => x.json());
-    if (r.error) { $('status').innerHTML = `<span class="error">${esc(r.error)}</span>`; return; }
-    $('status').textContent = `영화 ${r.count.toLocaleString()}편 중 상위 ${r.results.length}개`;
-    if (r.base) $('base').innerHTML = `<div class="base"><b>${esc(r.base.label)}</b> 와 비슷한 영화<div class="overview">${esc(r.base.overview)}</div></div>`;
-    $('results').innerHTML = r.results.map((m, i) => card(m, i + 1)).join('') || '<div class="status">결과 없음</div>';
-    $('results').querySelectorAll('.more').forEach((b) => b.onclick = () => {
-      setMode('similar'); $('q').value = b.dataset.label; run(); window.scrollTo({ top: 0, behavior: 'smooth' });
-    });
+    if (!compare) {
+      const r = await search(method, 10);
+      if (r.error) { $('status').innerHTML = `<span class="error">${esc(r.error)}</span>`; return; }
+      $('status').textContent = `영화 ${r.count.toLocaleString()}편 중 상위 ${r.results.length}개 · ${METHOD_NAMES[method][0]}`;
+      if (r.base) $('base').innerHTML = `<div class="base"><b>${esc(r.base.label)}</b> 와 비슷한 영화<div class="overview">${esc(r.base.overview)}</div></div>`;
+      $('results').innerHTML = r.results.map((m, i) => card(m, i + 1)).join('') || '<div class="status">결과 없음</div>';
+    } else {
+      const methods = ['tfidf', 'embed', 'hybrid'];
+      const rs = await Promise.all(methods.map((m) => search(m, 5)));
+      const err = rs.find((r) => r.error);
+      if (err) { $('status').innerHTML = `<span class="error">${esc(err.error)}</span>`; return; }
+      $('status').innerHTML = `영화 ${rs[0].count.toLocaleString()}편 · 같은 검색을 세 방식으로 <span class="note">(유사도 숫자는 방식마다 척도가 달라 서로 비교하지 않는다)</span>`;
+      if (rs[0].base) $('base').innerHTML = `<div class="base"><b>${esc(rs[0].base.label)}</b> 와 비슷한 영화<div class="overview">${esc(rs[0].base.overview)}</div></div>`;
+      $('results').innerHTML = '<div class="cols">' + rs.map((r, k) => `<div>
+        <h3>${METHOD_NAMES[methods[k]][0]}<small>${METHOD_NAMES[methods[k]][1]}</small></h3>
+        ${r.results.map((m, i) => card(m, i + 1)).join('') || '<div class="status">결과 없음</div>'}</div>`).join('') + '</div>';
+    }
+    wireMore();
   } catch (e) {
     $('status').innerHTML = '<span class="error">서버에 연결할 수 없습니다. python web.py 가 켜져 있는지 확인하세요.</span>';
   }
@@ -148,11 +197,16 @@ $('q').addEventListener('input', () => {
   }, 200);
 });
 document.querySelectorAll('#mode button').forEach((b) => b.onclick = () => setMode(b.dataset.m));
-$('data').onchange = () => { renderExamples(); if ($('q').value) run(); };
+$('data').onchange = () => { syncMethods(); renderExamples(); if ($('q').value) run(); };
+$('method').onchange = () => { if ($('q').value) run(); };
 $('form').onsubmit = (e) => { e.preventDefault(); run(); };
 
 fetch('/api/datasets').then((x) => x.json()).then((ds) => {
-  $('data').innerHTML = ds.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+  datasets = ds;
+  $('data').innerHTML = ds.map((d) => `<option value="${d.id}">${esc(d.name)}${d.embed ? '' : ' (임베딩 없음)'}</option>`).join('');
+  // 비교 결과 혼합이 가장 나아서(docs/EMBEDDING.md) 임베딩이 있으면 혼합을 기본으로
+  if (ds[0] && ds[0].embed) $('method').value = 'hybrid';
+  syncMethods();
   renderExamples();
 });
 </script>
